@@ -1,6 +1,12 @@
 # bot.py
 import logging
 import random
+import numpy as np
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -15,6 +21,7 @@ from telegram.ext import (
 
 from quiz_data import QUIZ_QUESTIONS
 
+
 # Enable logging to see debug output (useful for troubleshooting)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -23,7 +30,7 @@ logging.basicConfig(
 
 # Constants
 STATE_QUIZ_ACTIVE = "quiz_active"
-QUESTIONS_PER_QUIZ = 20  # Add this constant to control how many questions per quiz
+QUESTIONS_PER_QUIZ = 5  # Add this constant to control how many questions per quiz
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -31,11 +38,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     # Initialize quiz state
     context.user_data["current_question_index"] = 0
-    context.user_data["correct_answers"] = 0
+    context.user_data["correct_answers"] = np.array((0,0,0,0))
     context.user_data[STATE_QUIZ_ACTIVE] = True
     
     # Create a randomized subset of questions for this session
-    context.user_data["randomized_questions"] = random.sample(QUIZ_QUESTIONS, QUESTIONS_PER_QUIZ)
+    # context.user_data["randomized_questions"] = random.sample(QUIZ_QUESTIONS, QUESTIONS_PER_QUIZ)
+    
+    # Create a deterministic subset of questions for this session
+    context.user_data["randomized_questions"] = QUIZ_QUESTIONS[:QUESTIONS_PER_QUIZ]
 
     await send_question(update, context)
 
@@ -55,30 +65,40 @@ async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     question_text = f"Question {question_index + 1}/{QUESTIONS_PER_QUIZ}:\n\n{question_data['question']}\n\n"
     
     # Add options to question text
-    for idx, (_, option_text) in enumerate(options_with_indices):
-        option_letter = chr(65 + idx)  # Convert 0,1,2,3 to A,B,C,D
-        question_text += f"{option_letter}. {option_text}\n"
+    for idx, (_, option_dict) in enumerate(options_with_indices):
+        # option_letter = chr(65 + idx)  # Convert 0,1,2,3 to A,B,C,D
+        option_letter = option_dict['bulletpoint']
+        question_text += f'{option_letter}. {option_dict["text"]}\n'
 
     # Create simple A,B,C,D keyboard
     keyboard = []
-    for idx, (original_index, _) in enumerate(options_with_indices):
-        option_letter = chr(65 + idx)  # A, B, C, D
+    for idx, (original_index, option_dict) in enumerate(options_with_indices):
+        stat = option_dict["stat"]
+        option_letter = option_dict['bulletpoint']
         keyboard.append([
             InlineKeyboardButton(
                 text=option_letter,
-                callback_data=f"{question_index}|{idx}|{original_index}"
+                callback_data=f"{question_index}|{idx}|{stat}|{original_index}"
             )
         ])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+      # Acknowledge the callback query
     # If triggered by /start, reply to the message;
     # if triggered by callback, use the callback query's message instead
     if update.message:
         await update.message.reply_text(text=question_text, reply_markup=reply_markup)
     else:
+        query = update.callback_query
+        # If it's a callback, post the next question
+        await context.bot.send_message(chat_id=query.message.chat_id, text=question_text, reply_markup=reply_markup)
         # If it's a callback, edit the message to show the next question
-        await update.callback_query.edit_message_text(text=question_text, reply_markup=reply_markup)
+        # await query.edit_message_text(text=question_text, reply_markup=reply_markup)
+    
+    
+    # context.bot.send_message(chat_id=query.message.chat_id, text="You selected Option 1!")
+    
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -88,26 +108,24 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.callback_query.answer("The quiz is not active. Use /start to begin.")
         return
 
+    
+    
     # Parse callback_data
     callback_data = update.callback_query.data
-    question_index_str, _, original_option_index_str = callback_data.split("|")
+    question_index_str, _, stat_str, original_option_index_str = callback_data.split("|")
     question_index = int(question_index_str)
     selected_original_index = int(original_option_index_str)
+    stat = [int(i) for i in stat_str.strip("()").split(",")]
 
     # Check if the answer is correct
     question_data = context.user_data["randomized_questions"][question_index]
-    correct_option_index = question_data["correct_option_index"]
-    correct_answer = question_data["options"][correct_option_index]
-    
-    if selected_original_index == correct_option_index:
-        context.user_data["correct_answers"] += 1
-        feedback = "✅ Correct!"
-    else:
-        selected_answer = question_data["options"][selected_original_index]
-        feedback = f"❌ Wrong! The correct answer was: {correct_answer}"
+    bulletpoint = question_data["options"][selected_original_index]["bulletpoint"]
+    # bulletpoint = question_data['question']['bulletpoint']
+    context.user_data["correct_answers"] += np.array(stat)
+    feedback = "+"+bulletpoint
 
     # Show feedback message
-    await update.callback_query.answer(feedback, show_alert=True)
+    await update.callback_query.answer(feedback, show_alert=False)
 
     # Go to next question
     context.user_data["current_question_index"] += 1
@@ -128,7 +146,9 @@ async def show_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     correct_answers = context.user_data["correct_answers"]
     total_questions = QUESTIONS_PER_QUIZ  # Update this to use the constant
 
-    score_text = f"You got {correct_answers} out of {total_questions} questions correct!"
+    score_text = str(correct_answers)
+    
+    # score_text = f"You got {correct_answers} out of {total_questions} questions correct!"
     context.user_data[STATE_QUIZ_ACTIVE] = False  # Mark quiz as finished
 
     # Edit the last message with the final score
@@ -137,7 +157,8 @@ async def show_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 def main():
     """Start the bot."""
     # Replace 'YOUR_BOT_TOKEN' with your actual bot token
-    application = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
+    token = os.getenv('TOKEN')
+    application = ApplicationBuilder().token(token).build()
 
     # Register handlers
     application.add_handler(CommandHandler("start", start))
