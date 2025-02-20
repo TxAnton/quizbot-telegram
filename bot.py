@@ -132,7 +132,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     question_index = context.user_data["current_question_index"]
 
     # If we're at the end of the quiz, show results
-    if question_index >= QUESTIONS_PER_QUIZ:
+    if question_index >= QUESTIONS_PER_QUIZ+1:
         await show_result(update, context)
         return
 
